@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 from conteiner_log.loguru_config import logger
 from conteiner_oclusao.oclusion import OclusionDetector
+from billing_reporter import BillingReporter
 
 
 @dataclass
@@ -33,6 +34,10 @@ class OclusionSettings:
     rabbit_porta: int
     nome_anjos_exchange: str
     mensagens_prefetch: int
+    billing_enabled: bool
+    billing_queue: str
+    billing_report_interval_seconds: int
+    billing_timezone: str
 
 
 def _config_path() -> Path:
@@ -87,6 +92,10 @@ def load_settings(path: str | Path | None = None) -> OclusionSettings:
         rabbit_porta=int(env("rabbit_porta", "5672")),
         nome_anjos_exchange=str(env("nome_anjos_exchange", "anjosexchange")),
         mensagens_prefetch=int(env("mensagens_prefetch", "1")),
+        billing_enabled=_bool(env("BILLING_ENABLED", "False")),
+        billing_queue=str(env("BILLING_QUEUE", f"gtower_Trespassing_billing_{ativar}")),
+        billing_report_interval_seconds=int(env("BILLING_REPORT_INTERVAL_SECONDS", "3600")),
+        billing_timezone=str(env("BILLING_TIMEZONE", "America/Sao_Paulo")),
     )
 
 
@@ -170,11 +179,21 @@ def _publish_error(ch, settings: OclusionSettings, properties, *, error: Excepti
     _publish(ch, settings, properties, queue=settings.nome_da_fila_erros, body=b"", headers=headers)
 
 
-def make_callback(settings: OclusionSettings, detector: OclusionDetector | None) -> Callable:
+def make_callback(
+    settings: OclusionSettings,
+    detector: OclusionDetector | None,
+    billing_reporter: BillingReporter,
+) -> Callable:
     def callback(ch, method, properties, body):
         start = time.time()
         headers_in = dict(properties.headers or {})
         camera_id = headers_in.get("CameraId")
+
+        # Mesmo ponto de contabilização do smokefire: entrada do primeiro consumer.
+        try:
+            billing_reporter.record(headers_in)
+        except Exception:
+            logger.exception("Erro ao contabilizar frame para bilhetagem")
 
         try:
             if settings.enabled:
@@ -263,13 +282,27 @@ def setup_rabbitmq(settings: OclusionSettings):
 def run_consumer(settings: OclusionSettings) -> None:
     validate_settings(settings, require_rabbit=True)
     detector = OclusionDetector(settings.model_path) if settings.enabled else None
+    billing_reporter = BillingReporter(
+        enabled=settings.billing_enabled,
+        environment=settings.ativar,
+        rabbit_host=settings.rabbit_servidor,
+        rabbit_port=settings.rabbit_porta,
+        rabbit_user=settings.credentials_usuario,
+        rabbit_password=settings.credentials_senha,
+        exchange=settings.nome_anjos_exchange,
+        queue_name=settings.billing_queue,
+        report_interval_seconds=settings.billing_report_interval_seconds,
+        timezone_name=settings.billing_timezone,
+        logger=logger,
+    )
+    billing_reporter.start()
     connection = None
     try:
         connection, channel = setup_rabbitmq(settings)
         channel.basic_consume(
             queue=settings.nome_da_fila_entrada_oclusao,
             auto_ack=False,
-            on_message_callback=make_callback(settings, detector),
+            on_message_callback=make_callback(settings, detector, billing_reporter),
         )
         logger.info(
             "Oclusão Rabbit consumer iniciado | env={} | queue={} | next={} | enabled={} | model={}",
@@ -281,6 +314,10 @@ def run_consumer(settings: OclusionSettings) -> None:
         )
         channel.start_consuming()
     finally:
+        try:
+            billing_reporter.close()
+        except Exception:
+            logger.exception("Erro ao finalizar bilhetagem")
         if connection is not None and connection.is_open:
             connection.close()
 
