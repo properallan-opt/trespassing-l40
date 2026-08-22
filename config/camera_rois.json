@@ -1,6 +1,8 @@
 {
   "cameras": {
-    "31723": {
+    "18:31723": {
+      "AngelId": "18",
+      "CameraId": "31723",
       "coordinate_space": "normalized",
       "perimeter_polygon": [
         [0.017437, 0.984375],
@@ -9,7 +11,9 @@
         [0.000000, 0.240625]
       ]
     },
-    "31466":{
+    "18:31466": {
+      "AngelId": "18",
+      "CameraId": "31466",
       "coordinate_space": "normalized",
       "perimeter_polygon": [
         [0.014834, 0.068643],
