@@ -296,4 +296,3 @@ echo
 
 exec /usr/bin/supervisord \
     -c /etc/supervisor/conf.d/trespassing.conf
-
