@@ -66,6 +66,14 @@ rabbit_servidor = "t4s-anjos-rabbitmq-hom.t4s.local"
 rabbit_porta = 5672
 
 # =====================================================================================================================
+# BILHETAGEM - HOMOLOGACAO
+# =====================================================================================================================
+BILLING_ENABLED = "True"
+BILLING_QUEUE = "gtower_Trespassing_billing_hml"
+BILLING_REPORT_INTERVAL_SECONDS = 60
+BILLING_TIMEZONE = "America/Sao_Paulo"
+
+# =====================================================================================================================
 # PRODUCAO
 # =====================================================================================================================
 PROD_LOG_ERRO = "True"
@@ -101,4 +109,13 @@ PROD_credentials_usuario = "ep@gtower"
 PROD_credentials_senha = "VsAjfcH2Z28GsLdL2UJ9"
 PROD_rabbit_servidor = "gtower-rabbitmq.t4s.local"
 PROD_rabbit_porta = 5672
+
+# =====================================================================================================================
+# BILHETAGEM - PRODUCAO
+# =====================================================================================================================
+PROD_BILLING_ENABLED = "True"
+PROD_BILLING_QUEUE = "gtower_Trespassing_billing_prod"
+PROD_BILLING_REPORT_INTERVAL_SECONDS = 3600
+PROD_BILLING_TIMEZONE = "America/Sao_Paulo"
+
 
