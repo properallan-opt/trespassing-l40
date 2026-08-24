@@ -1,0 +1,121 @@
+# =====================================================================================================================
+# Ambiente: hml | prod
+# O entrypoint sobrescreve em runtime via APP_ENVIRONMENT conforme o argumento prod|hml.
+# =====================================================================================================================
+_ATIVAR = 'hml'
+
+# =====================================================================================================================
+# LOGS / RUNTIME
+# =====================================================================================================================
+DIR_NORMAL   = "/app/logs/normal"
+DIR_ERRO     = "/app/logs/erro"
+DIR_METRICAS = "/app/logs/metricas"
+MAX_FILE_SIZE_MB = 2
+RETENTION_SIZE = 50
+LOG_ERRO = "True"
+JANELA_METRICAS = 10
+limite_fila_rabbitmq = 150
+mensagens_prefetch = 1
+
+# =====================================================================================================================
+# ESTAGIO 1 - OCLUSAO
+# Mesmo modelo/classificador do smokefire-l40.
+# Classe 0 = câmera normal. Classe != 0 acima de FATOR_OCLUSAO_T4S = problema de câmera e bypass do trespassing.
+# =====================================================================================================================
+oclusao_chave = "True"
+model_oclusion_path = "./modelos_prod/T4S_model_oclusion.pt"
+FATOR_OCLUSAO_T4S = 0.90
+
+# =====================================================================================================================
+# ESTAGIO 2 - TRESPASSING
+# O modelo original recebido no trespassing-bento foi mantido como NCNN/CPU.
+# =====================================================================================================================
+MODEL_PATH = "./modelos_prod/yolo26n.pt"
+DEVICE = "0"
+IMAGE_SIZE = 320
+CONFIDENCE_THRESHOLD = 0.25
+IOU_THRESHOLD = 0.70
+PERSON_CLASS_ID = 0
+VERBOSE_MODEL = "False"
+
+# =====================================================================================================================
+# ROI / AREA DE INTERESSE
+# Prioridade: ROI recebida na mensagem Rabbit -> JSON local por CameraId.
+# O estágio de oclusão preserva todos os headers, incluindo TrespassingROI.
+# =====================================================================================================================
+ROI_REGISTRY_PATH = "/config/camera_rois.json"
+ROI_LOCAL_ENABLED = "True"
+ROI_MESSAGE_ENABLED = "True"
+ROI_MESSAGE_KEYS = "TrespassingROI,perimeter_polygon,PerimeterPolygon,AreaOfInterest"
+MISSING_ROI_POLICY = "skip"
+INCLUDE_ROI_IN_OUTPUT_HEADERS = "False"
+
+# =====================================================================================================================
+# RABBITMQ - HOMOLOGACAO
+# Fluxo: entrada_oclusao -> entrada_trespassing -> saida
+# Se a oclusão detectar problema de câmera, publica direto em saida e não executa trespassing.
+# =====================================================================================================================
+nome_da_fila_entrada_oclusao = "gtower_Frames2IepTrespassing_frames2ocl_hml"
+nome_da_fila_entrada_trespassing = "gtower_Frames2IepTrespassing_ocl2trespassing_hml"
+nome_da_fila_saida = "gtower_Frames2IepTrespassing_saida_hml"
+nome_da_fila_erros = "gtower_Frames2IepTrespassing_erro_hml"
+nome_anjos_exchange = "anjosexchange"
+credentials_usuario = "guilherme.arruda"
+credentials_senha = "lkj78asd77"
+rabbit_servidor = "t4s-anjos-rabbitmq-hom.t4s.local"
+rabbit_porta = 5672
+
+# =====================================================================================================================
+# BILHETAGEM - HOMOLOGACAO
+# =====================================================================================================================
+BILLING_ENABLED = "True"
+BILLING_QUEUE = "gtower_Trespassing_billing_hml"
+BILLING_REPORT_INTERVAL_SECONDS = 60
+BILLING_TIMEZONE = "America/Sao_Paulo"
+
+# =====================================================================================================================
+# PRODUCAO
+# =====================================================================================================================
+PROD_LOG_ERRO = "True"
+PROD_JANELA_METRICAS = 10
+PROD_limite_fila_rabbitmq = 150
+PROD_mensagens_prefetch = 1
+
+PROD_oclusao_chave = "True"
+PROD_model_oclusion_path = "./modelos_prod/T4S_model_oclusion.pt"
+PROD_FATOR_OCLUSAO_T4S = 0.90
+
+PROD_MODEL_PATH = "./modelos_prod/yolo26n.pt"
+PROD_DEVICE = "0"
+PROD_IMAGE_SIZE = 320
+PROD_CONFIDENCE_THRESHOLD = 0.25
+PROD_IOU_THRESHOLD = 0.70
+PROD_PERSON_CLASS_ID = 0
+PROD_VERBOSE_MODEL = "False"
+
+PROD_ROI_REGISTRY_PATH = "/config/camera_rois.json"
+PROD_ROI_LOCAL_ENABLED = "True"
+PROD_ROI_MESSAGE_ENABLED = "True"
+PROD_ROI_MESSAGE_KEYS = "TrespassingROI,perimeter_polygon,PerimeterPolygon,AreaOfInterest"
+PROD_MISSING_ROI_POLICY = "error"
+PROD_INCLUDE_ROI_IN_OUTPUT_HEADERS = "False"
+
+PROD_nome_da_fila_entrada_oclusao = "gtower_Frames2IepTrespassing_frames2ocl_prod"
+PROD_nome_da_fila_entrada_trespassing = "gtower_Frames2IepTrespassing_ocl2trespassing_prod"
+PROD_nome_da_fila_saida = "gtower_Frames2IepTrespassing_saida_prod"
+PROD_nome_da_fila_erros = "gtower_Frames2IepTrespassing_erro_prod"
+PROD_nome_anjos_exchange = "GTowerExchange"
+PROD_credentials_usuario = "ep@gtower"
+PROD_credentials_senha = "VsAjfcH2Z28GsLdL2UJ9"
+PROD_rabbit_servidor = "gtower-rabbitmq.t4s.local"
+PROD_rabbit_porta = 5672
+
+# =====================================================================================================================
+# BILHETAGEM - PRODUCAO
+# =====================================================================================================================
+PROD_BILLING_ENABLED = "True"
+PROD_BILLING_QUEUE = "gtower_Trespassing_billing_prod"
+PROD_BILLING_REPORT_INTERVAL_SECONDS = 3600
+PROD_BILLING_TIMEZONE = "America/Sao_Paulo"
+
+
