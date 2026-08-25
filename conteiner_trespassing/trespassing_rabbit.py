@@ -15,7 +15,12 @@ from dotenv import load_dotenv
 
 from conteiner_log.loguru_config import logger
 from conteiner_trespassing.detector import TrespassingDetector
-from conteiner_trespassing.roi_provider import MissingROIError, ROIError, ROIResolver
+from conteiner_trespassing.roi_provider import (
+    MissingROIError,
+    ROIError,
+    ROIResolver,
+    camera_identifier,
+)
 
 
 @dataclass
@@ -193,12 +198,28 @@ def decode_image_bytes(body: bytes) -> np.ndarray:
     return image
 
 
-def _camera_id(headers: dict[str, Any]) -> Any:
-    for key in ("CameraId", "cameraId", "cameraID", "camera_id"):
+def _header_id(headers: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
         value = headers.get(key)
         if value not in (None, ""):
             return value
     return None
+
+
+def _camera_id(headers: dict[str, Any]) -> Any:
+    return _header_id(headers, ("CameraId", "cameraId", "cameraID", "camera_id"))
+
+
+def _angel_id(headers: dict[str, Any]) -> Any:
+    # AngelId is the legacy/canonical field used by the project. AngleId and
+    # common casing variants are accepted to keep producers compatible.
+    return _header_id(
+        headers,
+        (
+            "AngelId", "AngelID", "angelId", "angelID", "angel_id",
+            "AngleId", "AngleID", "angleId", "angleID", "angle_id",
+        ),
+    )
 
 
 def _properties_with_headers(properties: pika.BasicProperties, headers: dict[str, Any]) -> pika.BasicProperties:
@@ -284,13 +305,31 @@ def make_callback(context: RuntimeContext) -> Callable:
         start = time.time()
         headers_in = dict(properties.headers or {})
         camera_id = _camera_id(headers_in)
+        angel_id = _angel_id(headers_in)
+        identifier = camera_identifier(camera_id, angel_id)
 
         try:
             image = decode_image_bytes(body)
-            roi = context.roi_resolver.resolve(camera_id, headers_in, image.shape)
+            roi = context.roi_resolver.resolve(
+                camera_id,
+                headers_in,
+                image.shape,
+                angel_id=angel_id,
+            )
+            missing_roi = roi.source == "full_image_missing_roi"
+            if missing_roi:
+                logger.warning(
+                    "ROI nao encontrada no camera_rois.json | identifier={} | "
+                    "AngelId={} | CameraId={} | processando imagem inteira",
+                    identifier,
+                    angel_id,
+                    camera_id,
+                )
+
             result = context.detector.predict(image, roi.points)
 
-            headers_out = _output_headers(headers_in, result, roi, settings)
+            status = "ok_full_image_missing_roi" if missing_roi else "ok"
+            headers_out = _output_headers(headers_in, result, roi, settings, status=status)
             body_out = body if result["detection"] else b""
             _publish_output(ch, settings, properties, headers_out, body_out)
             ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -300,10 +339,14 @@ def make_callback(context: RuntimeContext) -> Callable:
                 settings,
                 time.time() - start,
                 detected=bool(result["detection"]),
+                missing_roi=missing_roi,
             )
 
             logger.debug(
-                "Mensagem processada | CameraId={} | detection={} | roi_source={} | bbox_count={}",
+                "Mensagem processada | identifier={} | AngelId={} | CameraId={} | "
+                "detection={} | roi_source={} | bbox_count={}",
+                identifier,
+                angel_id,
                 camera_id,
                 result["detection"],
                 roi.source,
@@ -316,18 +359,18 @@ def make_callback(context: RuntimeContext) -> Callable:
                 headers_out = _output_headers(headers_in, result, None, settings, status="skipped_missing_roi")
                 _publish_output(ch, settings, properties, headers_out, b"")
                 ch.basic_ack(delivery_tag=method.delivery_tag)
-                logger.warning("Mensagem sem ROI ignorada | CameraId={} | {}", camera_id, exc)
+                logger.warning("Mensagem sem ROI ignorada | identifier={} | CameraId={} | {}", identifier, camera_id, exc)
             else:
                 _publish_error(
                     ch,
                     settings,
                     properties,
                     message="ROI de trespassing não encontrada para a câmera",
-                    context=f"CameraId={camera_id}",
+                    context=f"identifier={identifier}; AngelId={angel_id}; CameraId={camera_id}",
                     error=exc,
                 )
                 ch.basic_ack(delivery_tag=method.delivery_tag)
-                logger.error("ROI ausente | CameraId={} | {}", camera_id, exc)
+                logger.error("ROI ausente | identifier={} | CameraId={} | {}", identifier, camera_id, exc)
 
             _update_metrics(
                 context.metrics,

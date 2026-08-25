@@ -11,7 +11,30 @@ class ROIError(ValueError):
 
 
 class MissingROIError(ROIError):
-    """Raised when a camera has no ROI available from any enabled source."""
+    """Legacy error kept for compatibility with older callers/policies."""
+
+
+def _normalize_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    value = str(value).strip()
+    return value or None
+
+
+def camera_identifier(camera_id: Any, angel_id: Any = None) -> str | None:
+    """
+    Build the canonical camera identifier used by trespassing and billing.
+
+    - AngelId + CameraId -> "<AngelId>:<CameraId>"
+    - CameraId only      -> "<CameraId>"
+    """
+    camera = _normalize_id(camera_id)
+    angel = _normalize_id(angel_id)
+    if camera is None:
+        return None
+    return f"{angel}:{camera}" if angel is not None else camera
 
 
 @dataclass(frozen=True)
@@ -19,6 +42,7 @@ class ResolvedROI:
     points: list[list[float]]
     source: str
     coordinate_space: str = "pixels"
+    identifier: str | None = None
 
 
 class CameraROIRegistry:
@@ -26,8 +50,14 @@ class CameraROIRegistry:
     JSON-backed camera -> ROI registry with automatic reload when the file changes.
 
     Supported root shapes:
-      {"cameras": {"CAM01": {...}}}
-      {"CAM01": {...}}
+      {"cameras": {"18:31723": {...}, "31723": {...}}}
+      {"18:31723": {...}, "31723": {...}}
+
+    Lookup rule:
+      - when AngelId and CameraId are available, first try "AngelId:CameraId";
+      - for backward compatibility, also try the legacy CameraId-only key;
+      - when only CameraId is available, first try "CameraId";
+      - if that key is absent, a single unambiguous "*:CameraId" entry is accepted.
     """
 
     def __init__(self, path: str | Path):
@@ -56,11 +86,46 @@ class CameraROIRegistry:
         self._data = {str(key): value for key, value in cameras.items()}
         self._mtime_ns = mtime_ns
 
-    def get(self, camera_id: Any) -> Any | None:
+    @staticmethod
+    def candidate_keys(camera_id: Any, angel_id: Any = None) -> list[str]:
+        camera = _normalize_id(camera_id)
+        angel = _normalize_id(angel_id)
+        if camera is None:
+            return []
+
+        keys: list[str] = []
+        if angel is not None:
+            keys.append(f"{angel}:{camera}")
+        # Compatibility with old camera_rois.json files keyed only by CameraId.
+        if camera not in keys:
+            keys.append(camera)
+        return keys
+
+    def get_with_key(self, camera_id: Any, angel_id: Any = None) -> tuple[Any | None, str | None]:
         self._reload_if_needed()
-        if camera_id is None:
-            return None
-        return self._data.get(str(camera_id))
+        camera = _normalize_id(camera_id)
+        angel = _normalize_id(angel_id)
+
+        for key in self.candidate_keys(camera, angel):
+            if key in self._data:
+                return self._data[key], key
+
+        # Compatibility with a registry already migrated to composite keys when
+        # an older producer still sends CameraId only. This fallback is used
+        # only when the CameraId maps to exactly one composite key; if there are
+        # multiple angles for the same CameraId, selecting one would be unsafe.
+        if camera is not None and angel is None:
+            suffix = f":{camera}"
+            matches = [key for key in self._data if key.endswith(suffix)]
+            if len(matches) == 1:
+                matched_key = matches[0]
+                return self._data[matched_key], matched_key
+
+        return None, None
+
+    def get(self, camera_id: Any, angel_id: Any = None) -> Any | None:
+        payload, _ = self.get_with_key(camera_id, angel_id)
+        return payload
 
 
 class ROIResolver:
@@ -68,8 +133,9 @@ class ROIResolver:
     Resolves the ROI without coupling inference code to its storage/transport.
 
     Priority:
-      1) ROI in Rabbit message metadata/header (future production path)
-      2) local JSON registry keyed by CameraId (temporary/test fallback)
+      1) ROI in Rabbit message metadata/header
+      2) local JSON registry using the canonical camera identifier
+      3) full image when no ROI is registered
     """
 
     def __init__(
@@ -95,22 +161,49 @@ class ROIResolver:
         camera_id: Any,
         metadata: Mapping[str, Any] | None,
         image_shape: Sequence[int],
+        *,
+        angel_id: Any = None,
     ) -> ResolvedROI:
         height, width = int(image_shape[0]), int(image_shape[1])
+        identifier = camera_identifier(camera_id, angel_id)
 
         if self.message_enabled and metadata:
             payload, key = self._find_message_roi(metadata)
             if payload is not None:
                 points, space = self._parse_roi(payload, width=width, height=height)
-                return ResolvedROI(points=points, source=f"message:{key}", coordinate_space=space)
+                return ResolvedROI(
+                    points=points,
+                    source=f"message:{key}",
+                    coordinate_space=space,
+                    identifier=identifier,
+                )
 
         if self.local_enabled:
-            payload = self.registry.get(camera_id)
+            payload, matched_key = self.registry.get_with_key(camera_id, angel_id)
             if payload is not None:
                 points, space = self._parse_roi(payload, width=width, height=height)
-                return ResolvedROI(points=points, source="local_json", coordinate_space=space)
+                return ResolvedROI(
+                    points=points,
+                    source="local_json",
+                    coordinate_space=space,
+                    identifier=identifier,
+                )
 
-        raise MissingROIError(f"No ROI found for CameraId={camera_id!r}")
+        # No registered ROI: process the whole image. The polygon is expanded
+        # slightly beyond the image because the detector intentionally uses
+        # Polygon.contains(), which excludes points exactly on the boundary.
+        points = [
+            [-1.0, -1.0],
+            [float(width) + 1.0, -1.0],
+            [float(width) + 1.0, float(height) + 1.0],
+            [-1.0, float(height) + 1.0],
+        ]
+        return ResolvedROI(
+            points=points,
+            source="full_image_missing_roi",
+            coordinate_space="pixels",
+            identifier=identifier,
+        )
 
     def _find_message_roi(self, metadata: Mapping[str, Any]) -> tuple[Any | None, str | None]:
         for key in self.message_keys:

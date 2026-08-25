@@ -48,7 +48,12 @@ RabbitMQ BasicProperties
 
 O `body` deve conter uma imagem que possa ser decodificada pelo OpenCV com `cv2.imdecode`, normalmente JPEG.
 
-Exemplo de headers usando a ROI cadastrada localmente pelo `CameraId`:
+Exemplo de headers usando a ROI cadastrada localmente. O identificador é formado assim:
+
+- `AngelId`/`AngleId` + `CameraId` -> `<AngelId>:<CameraId>`
+- somente `CameraId` -> `<CameraId>`
+
+Exemplo:
 
 ```json
 {
@@ -188,8 +193,13 @@ A ROI é resolvida nesta ordem:
 
 ```text
 1. TrespassingROI / ROI presente nos headers
-2. camera_rois.json usando CameraId
+2. camera_rois.json usando <AngelId>:<CameraId>, quando ambos existem
+3. fallback compatível para camera_rois.json usando somente <CameraId>
+4. se vier somente CameraId e houver exatamente uma chave composta *:<CameraId>, ela também é aceita
+5. se nenhuma ROI puder ser resolvida sem ambiguidade, usa a imagem inteira
 ```
+
+`AngelId` é o nome histórico usado pelo projeto. Também são aceitas as variantes `AngleId`, `angleID`, `AngelID` e formas equivalentes de capitalização.
 
 Se a ROI estiver em coordenadas normalizadas, o `ROIResolver` converte os pontos para **pixels** usando largura e altura da imagem antes de chamar o detector.
 
@@ -346,23 +356,20 @@ body:    vazio
 
 ### ROI ausente e mensagens de erro
 
-Quando nenhuma ROI é encontrada e:
+Quando o identificador não existe no `camera_rois.json` e não há ROI na própria mensagem, o processamento **não é interrompido**. O serviço:
+
+1. grava um `warning` no log com o identificador, `AngelId` e `CameraId`;
+2. executa o trespassing sobre a imagem inteira;
+3. publica normalmente o resultado.
+
+Os headers indicam explicitamente esse fallback:
 
 ```text
-MISSING_ROI_POLICY = "skip"
+TrespassingRoiSource = "full_image_missing_roi"
+TrespassingStatus = "ok_full_image_missing_roi"
 ```
 
-a mensagem segue para a fila final com:
-
-```text
-TrespassingDetection = {"detection": false, "bbox": []}
-TrespassingMaxConfidence = "0.0"
-TrespassingRoiSource = "none"
-TrespassingStatus = "skipped_missing_roi"
-body = vazio
-```
-
-Quando `MISSING_ROI_POLICY="error"`, ou quando ocorre erro de imagem/ROI/inferência, a mensagem é enviada para:
+`MISSING_ROI_POLICY` é mantido no arquivo de configuração apenas por compatibilidade com versões anteriores; a ausência normal de cadastro no JSON agora usa imagem inteira. Erros de imagem, ROI inválida enviada na mensagem ou falha de inferência continuam sendo enviados para:
 
 ```text
 nome_da_fila_erros
@@ -500,9 +507,12 @@ O `rabbit_test.py` publica sempre na **fila de entrada da oclusão**, e não dir
 A inferência de trespassing não depende diretamente de onde a ROI veio. A classe `ROIResolver` resolve a área nesta ordem:
 
 1. ROI presente na mensagem Rabbit;
-2. JSON local relacionado ao `CameraId`.
+2. JSON local pela chave `<AngelId>:<CameraId>` quando os dois IDs existem;
+3. fallback para a chave antiga `<CameraId>`;
+4. com somente `CameraId`, uma única chave composta `*:<CameraId>` também pode ser usada por compatibilidade;
+5. imagem inteira quando não existe uma ROI resolvível sem ambiguidade.
 
-Isso permite testar hoje usando cadastro local e, no futuro, receber a ROI diretamente do sistema upstream sem alterar a lógica do modelo.
+Assim, mensagens antigas com apenas `CameraId` continuam funcionando e cadastros antigos do `camera_rois.json` continuam válidos.
 
 ### Cadastro local temporário
 
@@ -716,16 +726,6 @@ docker run --rm --gpus all \
 
 ## ROI ausente
 
-Em homologação:
+Se nenhuma ROI vier na mensagem e o identificador não existir no `camera_rois.json`, o serviço registra um `warning` e executa o trespassing na imagem inteira. Isso vale tanto em homologação quanto em produção.
 
-```text
-MISSING_ROI_POLICY = "skip"
-```
-
-Em produção:
-
-```text
-PROD_MISSING_ROI_POLICY = "error"
-```
-
-Assim um erro de cadastro de ROI em produção não vira falso negativo silencioso.
+As variáveis `MISSING_ROI_POLICY` e `PROD_MISSING_ROI_POLICY` continuam presentes no `.diglett` para compatibilidade de configuração com versões anteriores, mas não controlam mais o caso normal de ROI não cadastrada.

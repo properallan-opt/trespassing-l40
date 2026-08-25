@@ -58,7 +58,7 @@ class BillingReporter:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
-        # {YYYY-MM-DD: {"cameras": {(angel, camera): {...}}, "invalid_messages": int}}
+        # {YYYY-MM-DD: {"cameras": {identifier: {...}}, "invalid_messages": int}}
         self._days: dict[str, dict] = {}
 
     def _log(self, level: str, message: str) -> None:
@@ -77,6 +77,18 @@ class BillingReporter:
             value = value.decode("utf-8", errors="replace")
         value = str(value).strip()
         return value or None
+
+    @classmethod
+    def _header_id(cls, headers: dict, keys: tuple[str, ...]) -> str | None:
+        for key in keys:
+            value = cls._normalize_id(headers.get(key))
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _camera_identifier(angel_id: str | None, camera_id: str) -> str:
+        return f"{angel_id}:{camera_id}" if angel_id is not None else camera_id
 
     def start(self) -> None:
         if not self.enabled or self._thread is not None:
@@ -103,8 +115,17 @@ class BillingReporter:
             return
 
         headers = headers or {}
-        angel_id = self._normalize_id(headers.get("AngelId"))
-        camera_id = self._normalize_id(headers.get("CameraId"))
+        angel_id = self._header_id(
+            headers,
+            (
+                "AngelId", "AngelID", "angelId", "angelID", "angel_id",
+                "AngleId", "AngleID", "angleId", "angleID", "angle_id",
+            ),
+        )
+        camera_id = self._header_id(
+            headers,
+            ("CameraId", "cameraId", "cameraID", "camera_id"),
+        )
 
         now_utc = datetime.now(timezone.utc)
         day = now_utc.astimezone(self.local_tz).date().isoformat()
@@ -116,15 +137,18 @@ class BillingReporter:
                 {"cameras": {}, "invalid_messages": 0},
             )
 
-            if angel_id is None or camera_id is None:
+            # CameraId is the only mandatory identifier. AngelId/AngleId is
+            # optional for backward-compatible producers.
+            if camera_id is None:
                 day_state["invalid_messages"] += 1
                 return
 
-            key = (angel_id, camera_id)
+            key = self._camera_identifier(angel_id, camera_id)
             camera = day_state["cameras"].get(key)
 
             if camera is None:
                 day_state["cameras"][key] = {
+                    "identifier": key,
                     "angel_id": angel_id,
                     "camera_id": camera_id,
                     "cumulative_frames": 1,
